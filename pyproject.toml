@@ -1,0 +1,30 @@
+[project]
+name = "auto-film-conductor"
+version = "0.1.0"
+description = "Automated movie-night conductor for chat suggestions, polling, Radarr, and mpv."
+requires-python = ">=3.12"
+dependencies = [
+    "discord.py>=2.4.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.8.0",
+    "sqlmodel>=0.0.22",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "mypy>=1.20"]
+
+[project.scripts]
+afc-discord = "auto_film_conductor.cli:run_discord"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["auto_film_conductor"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
