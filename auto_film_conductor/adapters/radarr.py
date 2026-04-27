@@ -71,7 +71,7 @@ class RadarrClient:
             "qualityProfileId": self.quality_profile_id,
             "rootFolderPath": self.root_folder_path,
             "monitored": True,
-            "addOptions": {"searchForMovie": False},
+            "addOptions": {"searchForMovie": True},
         }
         data = await self._request("POST", "/api/v3/movie", json=payload)
         return int(data["id"])
