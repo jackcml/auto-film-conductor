@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
 
-from auto_film_conductor.domain import ResolvedMovie
+from auto_film_conductor.domain import DownloadProgress, ResolvedMovie
 from auto_film_conductor.path_mapping import PathMapping, map_playback_path
 
 
@@ -62,6 +63,18 @@ class RadarrClient:
 
         raise TimeoutError(f"Timed out waiting for Radarr import: {movie.title}")
 
+    async def download_progress(self, movie_id: int) -> DownloadProgress | None:
+        data = await self._request(
+            "GET",
+            "/api/v3/queue",
+            params={"page": 1, "pageSize": 50, "includeMovie": False, "movieIds": [movie_id]},
+        )
+        records = data.get("records", []) if isinstance(data, Mapping) else []
+        for record in records:
+            if record.get("movieId") == movie_id:
+                return _download_progress_from_queue_record(record)
+        return None
+
     async def _movie_by_id(self, radarr_id: int) -> dict[str, Any]:
         return await self._request("GET", f"/api/v3/movie/{radarr_id}")
 
@@ -113,3 +126,31 @@ def _movie_from_radarr(movie: dict[str, Any], playback_path_maps: tuple[PathMapp
         overview=movie.get("overview"),
         file_path=map_playback_path(file_path, playback_path_maps) if file_path else None,
     )
+
+
+def _download_progress_from_queue_record(record: dict[str, Any]) -> DownloadProgress:
+    size = _optional_number(record.get("size"))
+    size_left = _optional_number(record.get("sizeleft"))
+    percent = None
+    if size is not None and size > 0 and size_left is not None:
+        percent = max(0.0, min(100.0, round(((size - size_left) / size) * 100, 1)))
+
+    return DownloadProgress(
+        movie_id=int(record["movieId"]),
+        title=record.get("title"),
+        status=record.get("status"),
+        tracked_download_status=record.get("trackedDownloadStatus"),
+        tracked_download_state=record.get("trackedDownloadState"),
+        percent=percent,
+        estimated_completion_time=record.get("estimatedCompletionTime"),
+        time_left=record.get("timeleft"),
+    )
+
+
+def _optional_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

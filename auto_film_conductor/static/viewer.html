@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Auto Film Conductor Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f7f4ea;
+      --muted: #c4c0b4;
+      --line: rgba(247, 244, 234, 0.18);
+      --panel: rgba(20, 25, 28, 0.82);
+      --panel-strong: rgba(11, 14, 16, 0.9);
+      --accent: #4fd1c5;
+      --accent-2: #f7c948;
+      --danger: #ff7b72;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    body {
+      padding: clamp(24px, 3vw, 48px);
+    }
+
+    .overlay {
+      display: grid;
+      grid-template-columns: minmax(380px, 0.8fr) minmax(520px, 1.2fr);
+      grid-template-rows: auto 1fr auto;
+      gap: 18px;
+      width: 100%;
+      height: 100%;
+    }
+
+    .header,
+    .panel,
+    .download {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.32);
+      backdrop-filter: blur(14px);
+    }
+
+    .header {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      min-height: 112px;
+      padding: 22px 28px;
+      border-radius: 8px;
+    }
+
+    .phase {
+      min-width: 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 6px;
+      color: var(--accent);
+      font-size: clamp(18px, 1.4vw, 26px);
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .title {
+      margin: 0;
+      overflow: hidden;
+      color: var(--ink);
+      font-size: clamp(36px, 4vw, 70px);
+      font-weight: 900;
+      line-height: 0.98;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .timer {
+      min-width: 230px;
+      padding: 10px 0 6px 24px;
+      border-left: 1px solid var(--line);
+      text-align: right;
+    }
+
+    .timer-label {
+      display: block;
+      color: var(--muted);
+      font-size: 18px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .timer-value {
+      display: block;
+      margin-top: 4px;
+      color: var(--accent-2);
+      font-variant-numeric: tabular-nums;
+      font-size: clamp(42px, 5vw, 82px);
+      font-weight: 900;
+      line-height: 0.95;
+    }
+
+    .panel {
+      min-height: 0;
+      padding: 24px;
+      border-radius: 8px;
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-title h2 {
+      margin: 0;
+      font-size: clamp(24px, 2vw, 36px);
+      line-height: 1.05;
+    }
+
+    .count {
+      color: var(--muted);
+      font-size: clamp(18px, 1.4vw, 24px);
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .suggestions,
+    .candidates {
+      display: grid;
+      gap: 10px;
+      max-height: calc(100vh - 292px);
+      overflow: hidden;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      min-height: 54px;
+      padding: 10px 14px;
+      border: 1px solid rgba(247, 244, 234, 0.12);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .movie {
+      min-width: 0;
+      overflow: hidden;
+      font-size: clamp(21px, 1.7vw, 30px);
+      font-weight: 850;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .byline {
+      color: var(--muted);
+      font-size: clamp(16px, 1.2vw, 21px);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .download {
+      grid-column: 1 / -1;
+      min-height: 132px;
+      padding: 22px 28px;
+      border-radius: 8px;
+      background: var(--panel-strong);
+    }
+
+    .download-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: center;
+    }
+
+    .download-title {
+      margin: 0 0 8px;
+      overflow: hidden;
+      font-size: clamp(26px, 2.6vw, 48px);
+      font-weight: 900;
+      line-height: 1.05;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .download-message {
+      margin: 0;
+      color: var(--muted);
+      font-size: clamp(18px, 1.5vw, 26px);
+      font-weight: 750;
+    }
+
+    .percent {
+      min-width: 150px;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      font-size: clamp(34px, 4vw, 72px);
+      font-weight: 950;
+      text-align: right;
+    }
+
+    .bar {
+      position: relative;
+      height: 12px;
+      margin-top: 18px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(247, 244, 234, 0.16);
+    }
+
+    .fill {
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: width 300ms ease;
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      height: 100%;
+      min-height: 260px;
+      color: var(--muted);
+      font-size: clamp(24px, 2vw, 36px);
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 18px;
+      }
+
+      .overlay {
+        grid-template-columns: 1fr;
+      }
+
+      .header {
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+
+      .timer {
+        min-width: 0;
+        padding: 14px 0 0;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        text-align: left;
+      }
+
+      .download {
+        grid-column: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="overlay">
+    <section class="header">
+      <div class="phase">
+        <p class="eyebrow" id="roundLabel">Auto Film Conductor</p>
+        <h1 class="title" id="phaseTitle">No active round</h1>
+      </div>
+      <div class="timer" id="timerBox">
+        <span class="timer-label">Time remaining</span>
+        <span class="timer-value" id="timerValue">--:--</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Suggestions</h2>
+        <span class="count" id="suggestionCount">0</span>
+      </div>
+      <div class="suggestions" id="suggestions"></div>
+      <div class="empty hidden" id="suggestionEmpty">Waiting for suggestions</div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2 id="pollTitle">Current slate</h2>
+        <span class="count" id="candidateCount">0</span>
+      </div>
+      <div class="candidates" id="candidates"></div>
+      <div class="empty hidden" id="candidateEmpty">Slate appears after suggestions close</div>
+    </section>
+
+    <section class="download hidden" id="downloadBox">
+      <div class="download-grid">
+        <div>
+          <p class="download-title" id="downloadTitle">Preparing winner</p>
+          <p class="download-message" id="downloadMessage">Waiting for Radarr import</p>
+        </div>
+        <div class="percent" id="downloadPercent">--</div>
+      </div>
+      <div class="bar">
+        <div class="fill" id="downloadFill"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const els = {
+      roundLabel: document.getElementById("roundLabel"),
+      phaseTitle: document.getElementById("phaseTitle"),
+      timerBox: document.getElementById("timerBox"),
+      timerValue: document.getElementById("timerValue"),
+      suggestionCount: document.getElementById("suggestionCount"),
+      suggestions: document.getElementById("suggestions"),
+      suggestionEmpty: document.getElementById("suggestionEmpty"),
+      pollTitle: document.getElementById("pollTitle"),
+      candidateCount: document.getElementById("candidateCount"),
+      candidates: document.getElementById("candidates"),
+      candidateEmpty: document.getElementById("candidateEmpty"),
+      downloadBox: document.getElementById("downloadBox"),
+      downloadTitle: document.getElementById("downloadTitle"),
+      downloadMessage: document.getElementById("downloadMessage"),
+      downloadPercent: document.getElementById("downloadPercent"),
+      downloadFill: document.getElementById("downloadFill"),
+    };
+
+    let latestState = null;
+    let serverSkewMs = 0;
+
+    async function pollState() {
+      try {
+        const response = await fetch("/viewer/state", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("state request failed");
+        }
+        const state = await response.json();
+        latestState = state;
+        serverSkewMs = Date.now() - Date.parse(state.server_time);
+        render(state);
+      } catch {
+        els.phaseTitle.textContent = "Connection lost";
+        els.roundLabel.textContent = "Auto Film Conductor";
+      }
+    }
+
+    function render(state) {
+      const round = state.round;
+      if (!round) {
+        els.roundLabel.textContent = "Auto Film Conductor";
+        els.phaseTitle.textContent = "No active round";
+        els.timerBox.classList.add("hidden");
+        renderList(els.suggestions, els.suggestionEmpty, []);
+        renderList(els.candidates, els.candidateEmpty, []);
+        els.suggestionCount.textContent = "0";
+        els.candidateCount.textContent = "0";
+        els.downloadBox.classList.add("hidden");
+        return;
+      }
+
+      els.roundLabel.textContent = `Round ${round.id}`;
+      els.phaseTitle.textContent = round.phase;
+      els.timerBox.classList.toggle("hidden", !round.timer_target);
+      renderTimer();
+
+      els.suggestionCount.textContent = String(round.suggestions.length);
+      renderList(els.suggestions, els.suggestionEmpty, round.suggestions);
+
+      const candidates = round.poll ? round.poll.candidates : [];
+      els.pollTitle.textContent = round.poll ? pollLabel(round.poll.kind) : "Current slate";
+      els.candidateCount.textContent = String(candidates.length);
+      renderList(els.candidates, els.candidateEmpty, candidates);
+
+      if (round.download) {
+        els.downloadBox.classList.remove("hidden");
+        els.downloadTitle.textContent = round.download.title || round.winner_title || "Preparing winner";
+        els.downloadMessage.textContent = downloadMessage(round.download);
+        const percent = Number.isFinite(round.download.percent) ? round.download.percent : null;
+        els.downloadPercent.textContent = percent === null ? "--" : `${Math.round(percent)}%`;
+        els.downloadFill.style.width = `${percent === null ? 8 : percent}%`;
+      } else {
+        els.downloadBox.classList.add("hidden");
+      }
+    }
+
+    function renderList(container, empty, items) {
+      container.replaceChildren();
+      empty.classList.toggle("hidden", items.length > 0);
+      for (const item of items.slice(-12)) {
+        const row = document.createElement("div");
+        row.className = "row";
+
+        const movie = document.createElement("div");
+        movie.className = "movie";
+        movie.textContent = formatMovie(item);
+
+        const byline = document.createElement("div");
+        byline.className = "byline";
+        byline.textContent = item.display_name;
+
+        row.append(movie, byline);
+        container.append(row);
+      }
+    }
+
+    function renderTimer() {
+      const target = latestState && latestState.round ? latestState.round.timer_target : null;
+      if (!target) {
+        return;
+      }
+      const remaining = Math.max(0, Math.ceil((Date.parse(target) - (Date.now() - serverSkewMs)) / 1000));
+      const minutes = Math.floor(remaining / 60);
+      const seconds = remaining % 60;
+      els.timerValue.textContent = `${minutes}:${String(seconds).padStart(2, "0")}`;
+    }
+
+    function formatMovie(item) {
+      return item.year ? `${item.title} (${item.year})` : item.title;
+    }
+
+    function pollLabel(kind) {
+      return kind === "rcv" ? "Runoff slate" : "Approval slate";
+    }
+
+    function downloadMessage(download) {
+      if (download.time_left) {
+        return `${download.message} - ${download.time_left} left`;
+      }
+      return download.message;
+    }
+
+    pollState();
+    setInterval(pollState, 1000);
+    setInterval(renderTimer, 250);
+  </script>
+</body>
+</html>

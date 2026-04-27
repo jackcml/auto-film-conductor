@@ -40,6 +40,18 @@ class PollResult:
     scores: dict[str, int]
 
 
+@dataclass(frozen=True)
+class DownloadProgress:
+    movie_id: int
+    title: str | None
+    status: str | None
+    tracked_download_status: str | None
+    tracked_download_state: str | None
+    percent: float | None
+    estimated_completion_time: str | None
+    time_left: str | None
+
+
 class MovieResolver(Protocol):
     async def resolve(self, query: str) -> ResolvedMovie | None:
         ...
