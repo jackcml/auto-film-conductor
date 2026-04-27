@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from auto_film_conductor.domain import ResolvedMovie
+from auto_film_conductor.path_mapping import PathMapping, map_playback_path
 
 
 class RadarrClient:
@@ -19,6 +20,7 @@ class RadarrClient:
         client: httpx.AsyncClient | None = None,
         import_timeout_seconds: int = 3600,
         poll_interval_seconds: int = 20,
+        playback_path_maps: tuple[PathMapping, ...] = (),
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -27,13 +29,14 @@ class RadarrClient:
         self._client = client
         self.import_timeout_seconds = import_timeout_seconds
         self.poll_interval_seconds = poll_interval_seconds
+        self.playback_path_maps = playback_path_maps
 
     async def resolve(self, query: str) -> ResolvedMovie | None:
         data = await self._request("GET", "/api/v3/movie/lookup", params={"term": query})
         if not data:
             return None
         movie = data[0]
-        return _movie_from_radarr(movie)
+        return _movie_from_radarr(movie, self.playback_path_maps)
 
     async def request_and_wait(self, movie: ResolvedMovie) -> ResolvedMovie:
         radarr_id = movie.radarr_id
@@ -46,13 +49,14 @@ class RadarrClient:
             imported = await self._movie_by_id(radarr_id)
             file_path = imported.get("movieFile", {}).get("path")
             if file_path:
+                playback_path = map_playback_path(file_path, self.playback_path_maps)
                 return ResolvedMovie(
                     title=movie.title,
                     year=movie.year,
                     tmdb_id=movie.tmdb_id,
                     radarr_id=radarr_id,
                     overview=movie.overview,
-                    file_path=file_path,
+                    file_path=playback_path,
                 )
             await asyncio.sleep(self.poll_interval_seconds)
 
@@ -91,12 +95,13 @@ class RadarrClient:
             return response.json()
 
 
-def _movie_from_radarr(movie: dict[str, Any]) -> ResolvedMovie:
+def _movie_from_radarr(movie: dict[str, Any], playback_path_maps: tuple[PathMapping, ...] = ()) -> ResolvedMovie:
+    file_path = movie.get("movieFile", {}).get("path")
     return ResolvedMovie(
         title=movie.get("title", "Unknown title"),
         year=movie.get("year"),
         tmdb_id=movie.get("tmdbId"),
         radarr_id=movie.get("id"),
         overview=movie.get("overview"),
-        file_path=movie.get("movieFile", {}).get("path"),
+        file_path=map_playback_path(file_path, playback_path_maps) if file_path else None,
     )

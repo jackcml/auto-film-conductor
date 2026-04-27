@@ -61,6 +61,7 @@ class AppState:
                 api_key=settings.radarr_api_key,
                 root_folder_path=settings.radarr_root_folder_path,
                 quality_profile_id=settings.radarr_quality_profile_id,
+                playback_path_maps=settings.playback_path_maps,
             ),
             voting=self.voting,
             downloader=RadarrClient(
@@ -68,6 +69,7 @@ class AppState:
                 api_key=settings.radarr_api_key,
                 root_folder_path=settings.radarr_root_folder_path,
                 quality_profile_id=settings.radarr_quality_profile_id,
+                playback_path_maps=settings.playback_path_maps,
             ),
             player=MpvIpcController(settings.mpv_ipc_path),
         )

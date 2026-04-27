@@ -50,7 +50,15 @@ Settings are read from environment variables after loading `.env` from the curre
 | `AFC_RADARR_API_KEY`            | empty                                | Radarr API key                           |
 | `AFC_RADARR_ROOT_FOLDER_PATH`   | empty                                | Root folder for new movies               |
 | `AFC_RADARR_QUALITY_PROFILE_ID` | `1`                                  | Radarr quality profile ID                |
+| `AFC_PLAYBACK_PATH_MAPS`        | empty                                | Optional `Radarr=playback` path rewrites |
 | `AFC_MPV_IPC_PATH`              | `\\.\pipe\mpv-pipe`                  | mpv IPC pipe/socket path                 |
+
+`AFC_PLAYBACK_PATH_MAPS` rewrites Radarr/Docker paths into paths visible to `mpv`.
+Use semicolons for multiple prefix mappings, with the longest matching prefix applied first:
+
+```env
+AFC_PLAYBACK_PATH_MAPS=/movies=D:\Media\Movies;/downloads=C:\Downloads
+```
 
 ## Useful Endpoints
 

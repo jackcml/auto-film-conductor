@@ -7,6 +7,8 @@ from typing import Mapping
 
 from dotenv import dotenv_values
 
+from auto_film_conductor.path_mapping import PathMapping, parse_path_mappings
+
 
 def _env(name: str, dotenv_env: Mapping[str, str | None]) -> str | None:
     if name in os.environ:
@@ -44,6 +46,7 @@ class Settings:
     radarr_api_key: str = ""
     radarr_root_folder_path: str = ""
     radarr_quality_profile_id: int = 1
+    playback_path_maps: tuple[PathMapping, ...] = ()
     mpv_ipc_path: str = r"\\.\pipe\mpv-pipe"
 
     @classmethod
@@ -64,5 +67,6 @@ class Settings:
             radarr_api_key=_env("AFC_RADARR_API_KEY", dotenv_env) or "",
             radarr_root_folder_path=_env("AFC_RADARR_ROOT_FOLDER_PATH", dotenv_env) or "",
             radarr_quality_profile_id=_int_env("AFC_RADARR_QUALITY_PROFILE_ID", cls.radarr_quality_profile_id, dotenv_env),
+            playback_path_maps=parse_path_mappings(_env("AFC_PLAYBACK_PATH_MAPS", dotenv_env)),
             mpv_ipc_path=_env("AFC_MPV_IPC_PATH", dotenv_env) or cls.mpv_ipc_path,
         )
