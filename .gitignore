@@ -3,6 +3,9 @@
 .pytest_cache/
 pytest-cache-files-*/
 .test-data/
+.env
+.env.*
+!.env.example
 __pycache__/
 *.py[cod]
 *.db

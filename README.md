@@ -13,12 +13,18 @@ The first implementation is Discord-first but adapter-based. The voting platform
 
 ## Run Locally
 
+Create a local `.env` from the example and fill in the values you need:
+
+```powershell
+Copy-Item .env.example .env
+```
+
 ```powershell
 uv sync --extra dev
 uv run uvicorn auto_film_conductor.app:app --reload
 ```
 
-Run the Discord adapter in a second process after setting `AFC_DISCORD_TOKEN`:
+Run the Discord adapter in a second process after setting `AFC_DISCORD_TOKEN` in `.env`:
 
 ```powershell
 uv run afc-discord
@@ -26,7 +32,7 @@ uv run afc-discord
 
 ## Core Settings
 
-Settings are read from environment variables.
+Settings are read from environment variables after loading `.env` from the current working directory. Real environment variables override values from `env`.
 
 | Variable                        | Default                              | Purpose                                  |
 | ------------------------------- | ------------------------------------ | ---------------------------------------- |
