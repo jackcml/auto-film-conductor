@@ -158,6 +158,33 @@ class ConductorService:
             session.commit()
 
         candidates = [_candidate(suggestion) for suggestion in sampled]
+        if len(sampled) < round_record.runoff_size:
+            poll_id = await self.voting.create_poll(
+                kind=PollKind.RCV,
+                title="Movie Night Ranked-Choice Runoff",
+                candidates=candidates,
+                duration_seconds=round_record.rcv_poll_seconds,
+            )
+
+            with self.session_factory() as session:
+                round_record = _round(session, round_id)
+                poll = PollRecord(
+                    round_id=round_id,
+                    kind=PollKind.RCV,
+                    external_id=poll_id,
+                    status=PollStatus.OPEN,
+                    candidate_suggestion_ids=json.dumps([suggestion.id for suggestion in sampled]),
+                )
+                round_record.rcv_poll_id = poll_id
+                round_record.status = RoundStatus.RCV_OPEN
+                round_record.updated_at = utc_now()
+                session.add(poll)
+                session.add(round_record)
+                _audit(session, round_id, "rcv_poll_opened", poll_id)
+                session.commit()
+                session.refresh(round_record)
+                return round_record
+
         poll_id = await self.voting.create_poll(
             kind=PollKind.APPROVAL,
             title="Movie Night Approval Vote",

@@ -8,7 +8,7 @@ from sqlmodel import Session
 
 from auto_film_conductor.config import Settings
 from auto_film_conductor.domain import ResolvedMovie
-from auto_film_conductor.models import PollRecord, RoundStatus, Suggestion
+from auto_film_conductor.models import PollKind, PollRecord, RoundStatus, Suggestion
 from auto_film_conductor.services.conductor import ConductorService
 from auto_film_conductor.storage import init_db, make_engine
 from auto_film_conductor.voting import MockVotingProvider
@@ -140,6 +140,24 @@ async def test_rejects_second_active_suggestion_from_same_viewer(workspace_tmp: 
     assert first.accepted
     assert not second.accepted
     assert "already have one active suggestion" in second.message
+
+
+@pytest.mark.asyncio
+async def test_collection_opens_rcv_when_first_round_has_fewer_suggestions_than_runoff_limit(workspace_tmp: Path) -> None:
+    service, voting, *_ = make_service(workspace_tmp)
+
+    round_record = await service.start_round()
+    await service.submit_suggestion(platform="discord", user_id="1", display_name="One", raw_text="Shame 2012")
+
+    after_collection = await service.close_collection(round_record.id)
+
+    assert after_collection.status == RoundStatus.RCV_OPEN
+    assert after_collection.approval_poll_id is None
+    assert after_collection.rcv_poll_id is not None
+
+    rcv = voting.snapshot(after_collection.rcv_poll_id)
+    assert rcv.kind == PollKind.RCV
+    assert [candidate.title for candidate in rcv.candidates] == ["Shame"]
 
 
 @pytest.mark.asyncio
