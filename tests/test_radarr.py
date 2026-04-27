@@ -34,3 +34,21 @@ async def test_request_and_wait_returns_playback_mapped_file_path() -> None:
 
     assert imported.file_path == r"D:\Media\Movies\Alien (1979)\Alien.mkv"
     assert [request.url.path for request in requests] == ["/api/v3/command", "/api/v3/movie/10"]
+
+
+@pytest.mark.asyncio
+async def test_request_wraps_connect_errors_with_clear_radarr_message() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("All connection attempts failed", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = RadarrClient(
+            base_url="http://radarr.local",
+            api_key="secret",
+            root_folder_path="/movies",
+            quality_profile_id=1,
+            client=http_client,
+        )
+
+        with pytest.raises(RuntimeError, match="Radarr is unreachable at http://radarr.local"):
+            await client.resolve("Alien 1979")

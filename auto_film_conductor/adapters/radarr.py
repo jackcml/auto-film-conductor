@@ -85,14 +85,22 @@ class RadarrClient:
             raise RuntimeError("Radarr is not configured")
         headers = kwargs.pop("headers", {})
         headers["X-Api-Key"] = self.api_key
-        if self._client is not None:
-            response = await self._client.request(method, f"{self.base_url}{path}", headers=headers, **kwargs)
-            response.raise_for_status()
-            return response.json()
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.request(method, f"{self.base_url}{path}", headers=headers, **kwargs)
-            response.raise_for_status()
-            return response.json()
+        url = f"{self.base_url}{path}"
+        try:
+            if self._client is not None:
+                response = await self._client.request(method, url, headers=headers, **kwargs)
+                response.raise_for_status()
+                return response.json()
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.request(method, url, headers=headers, **kwargs)
+                response.raise_for_status()
+                return response.json()
+        except httpx.ConnectError as exc:
+            raise RuntimeError(f"Radarr is unreachable at {self.base_url}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"Radarr returned HTTP {exc.response.status_code} for {path}") from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"Radarr request failed for {path}: {exc}") from exc
 
 
 def _movie_from_radarr(movie: dict[str, Any], playback_path_maps: tuple[PathMapping, ...] = ()) -> ResolvedMovie:

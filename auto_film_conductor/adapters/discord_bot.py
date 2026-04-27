@@ -40,14 +40,20 @@ class DiscordConductorBot(discord.Client):
             return
         match = MENTION_RE.match(message.content.strip())
         query = match.group("query").strip() if match else message.content.replace(self.user.mention, "", 1).strip()
-        result = await self.conductor.submit_suggestion(
-            platform="discord",
-            user_id=str(message.author.id),
-            display_name=message.author.display_name,
-            raw_text=query,
-            bypass_suggestion_limit=self._has_admin_role(message.author),
-        )
-        await message.reply(result.message, mention_author=False)
+        try:
+            result = await self.conductor.submit_suggestion(
+                platform="discord",
+                user_id=str(message.author.id),
+                display_name=message.author.display_name,
+                raw_text=query,
+                bypass_suggestion_limit=self._has_admin_role(message.author),
+            )
+            reply = result.message
+        except RuntimeError:
+            reply = "Movie lookup is unavailable right now. Check Radarr and try again."
+        except ValueError as exc:
+            reply = str(exc)
+        await message.reply(reply, mention_author=False)
 
     def _register_commands(self) -> None:
         group = app_commands.Group(name="conductor", description="Control the automated movie-night conductor.")
