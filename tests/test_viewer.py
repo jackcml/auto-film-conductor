@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auto_film_conductor.app import create_app
@@ -30,6 +33,10 @@ def make_client(workspace_tmp: Path) -> TestClient:
     return TestClient(app)
 
 
+def _app(client: TestClient) -> FastAPI:
+    return cast(FastAPI, client.app)
+
+
 def test_viewer_serves_overlay_page(workspace_tmp: Path) -> None:
     with make_client(workspace_tmp) as client:
         response = client.get("/viewer")
@@ -49,7 +56,7 @@ def test_viewer_state_returns_no_active_round(workspace_tmp: Path) -> None:
 
 def test_viewer_state_shows_accepted_suggestions_with_display_names_only(workspace_tmp: Path) -> None:
     with make_client(workspace_tmp) as client:
-        with client.app.state.afc.session_factory() as session:
+        with _app(client).state.afc.session_factory() as session:
             round_record = Round(
                 status=RoundStatus.COLLECTING,
                 collection_closes_at=utc_now() + timedelta(seconds=90),
@@ -111,9 +118,48 @@ def test_viewer_state_shows_accepted_suggestions_with_display_names_only(workspa
     assert "raw accepted text" not in response.text
 
 
+def test_viewer_state_advances_expired_collection(workspace_tmp: Path) -> None:
+    with make_client(workspace_tmp) as client:
+        with _app(client).state.afc.session_factory() as session:
+            round_record = Round(
+                status=RoundStatus.COLLECTING,
+                collection_closes_at=utc_now() - timedelta(seconds=1),
+                sample_size=15,
+                runoff_size=5,
+                approval_poll_seconds=300,
+                rcv_poll_seconds=300,
+            )
+            session.add(round_record)
+            session.commit()
+            session.refresh(round_record)
+            session.add(
+                Suggestion(
+                    round_id=round_record.id,
+                    platform="discord",
+                    user_id="1",
+                    display_name="One",
+                    raw_text="Alien 1979",
+                    status=SuggestionStatus.ACCEPTED,
+                    title="Alien",
+                    year=1979,
+                    sampled=False,
+                )
+            )
+            session.commit()
+
+        _app(client).state.afc.conductor.wake_expiry_monitor()
+        response = _wait_for_viewer_status(client, RoundStatus.RCV_OPEN)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["round"]["status"] == RoundStatus.RCV_OPEN
+    assert payload["round"]["phase"] == "Runoff vote"
+    assert payload["round"]["poll"]["kind"] == "rcv"
+
+
 def test_viewer_state_includes_active_poll_slate(workspace_tmp: Path) -> None:
     with make_client(workspace_tmp) as client:
-        with client.app.state.afc.session_factory() as session:
+        with _app(client).state.afc.session_factory() as session:
             round_record = Round(
                 status=RoundStatus.APPROVAL_OPEN,
                 collection_closes_at=utc_now() - timedelta(seconds=1),
@@ -175,8 +221,9 @@ def test_viewer_state_includes_active_poll_slate(workspace_tmp: Path) -> None:
 
 def test_viewer_state_shows_download_progress_without_file_path(workspace_tmp: Path) -> None:
     with make_client(workspace_tmp) as client:
-        client.app.state.afc.radarr = FakeProgressProvider()
-        with client.app.state.afc.session_factory() as session:
+        app = _app(client)
+        app.state.afc.radarr = FakeProgressProvider()
+        with app.state.afc.session_factory() as session:
             round_record = Round(
                 status=RoundStatus.DOWNLOADING,
                 collection_closes_at=utc_now() - timedelta(seconds=1),
@@ -216,3 +263,15 @@ def test_viewer_state_shows_download_progress_without_file_path(workspace_tmp: P
     assert download["percent"] == 72.5
     assert download["message"] == "Downloading via Radarr"
     assert r"C:\Movies\Alien.mkv" not in response.text
+
+
+def _wait_for_viewer_status(client: TestClient, status: RoundStatus):
+    deadline = time.monotonic() + 2
+    response = client.get("/viewer/state")
+    while time.monotonic() < deadline:
+        payload = response.json()
+        if payload["round"] is not None and payload["round"]["status"] == status:
+            return response
+        time.sleep(0.01)
+        response = client.get("/viewer/state")
+    raise AssertionError(f"Viewer state did not reach {status}")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 import re
 
 import discord
@@ -26,10 +28,19 @@ class DiscordConductorBot(discord.Client):
         self.channel_id = channel_id
         self.admin_role_id = admin_role_id
         self.tree = app_commands.CommandTree(self)
+        self._expiry_task: asyncio.Task[None] | None = None
         self._register_commands()
 
     async def setup_hook(self) -> None:
         await self.tree.sync()
+        self._expiry_task = asyncio.create_task(self.conductor.run_expiry_monitor())
+
+    async def close(self) -> None:
+        if self._expiry_task is not None:
+            self._expiry_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._expiry_task
+        await super().close()
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:

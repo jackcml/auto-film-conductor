@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import random
+import asyncio
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from auto_film_conductor.config import Settings
 from auto_film_conductor.domain import ResolvedMovie
-from auto_film_conductor.models import PollKind, PollRecord, RoundStatus, Suggestion
+from auto_film_conductor.models import PollKind, PollRecord, Round, RoundStatus, Suggestion, utc_now
 from auto_film_conductor.services.conductor import ConductorService
 from auto_film_conductor.storage import init_db, make_engine
 from auto_film_conductor.voting import MockVotingProvider
@@ -161,6 +163,160 @@ async def test_collection_opens_rcv_when_first_round_has_fewer_suggestions_than_
 
 
 @pytest.mark.asyncio
+async def test_current_round_does_not_close_expired_collection(workspace_tmp: Path) -> None:
+    service, voting, *_ = make_service(workspace_tmp)
+
+    round_record = await service.start_round()
+    await service.submit_suggestion(platform="discord", user_id="1", display_name="One", raw_text="Shame 2012")
+
+    with service.session_factory() as session:
+        stored_round = session.get(Round, round_record.id)
+        assert stored_round is not None
+        stored_round.collection_closes_at = utc_now() - timedelta(seconds=1)
+        session.add(stored_round)
+        session.commit()
+
+    advanced = await service.current_round()
+
+    assert advanced is not None
+    assert advanced.status == RoundStatus.COLLECTING
+    assert advanced.rcv_poll_id is None
+    assert not voting._polls
+
+
+@pytest.mark.asyncio
+async def test_rejects_suggestion_after_collection_deadline_without_advancing(workspace_tmp: Path) -> None:
+    service, *_ = make_service(workspace_tmp)
+
+    round_record = await service.start_round()
+    with service.session_factory() as session:
+        stored_round = session.get(Round, round_record.id)
+        assert stored_round is not None
+        stored_round.collection_closes_at = utc_now() - timedelta(seconds=1)
+        session.add(stored_round)
+        session.commit()
+
+    result = await service.submit_suggestion(platform="discord", user_id="1", display_name="One", raw_text="Shame 2012")
+
+    assert not result.accepted
+    assert "collection window has ended" in result.message
+    with service.session_factory() as session:
+        stored_round = session.get(Round, round_record.id)
+        assert stored_round is not None
+        assert stored_round.status == RoundStatus.COLLECTING
+
+
+@pytest.mark.asyncio
+async def test_expiry_monitor_closes_expired_approval_poll(workspace_tmp: Path) -> None:
+    service, voting, *_ = make_service(workspace_tmp)
+    monitor = asyncio.create_task(service.run_expiry_monitor())
+    try:
+        round_record = await service.start_round()
+        await service.submit_suggestion(platform="discord", user_id="1", display_name="One", raw_text="Shame 2012")
+        await service.submit_suggestion(platform="discord", user_id="2", display_name="Two", raw_text="Heat 1995")
+        await service.submit_suggestion(platform="discord", user_id="3", display_name="Three", raw_text="Alien 1979")
+        after_collection = await service.close_collection(round_record.id)
+        old_poll_id = after_collection.approval_poll_id
+        assert old_poll_id is not None
+
+        with service.session_factory() as session:
+            poll = session.exec(select(PollRecord).where(PollRecord.external_id == old_poll_id)).one()
+            poll.created_at = utc_now() - timedelta(seconds=after_collection.approval_poll_seconds + 1)
+            session.add(poll)
+            session.commit()
+
+        service.wake_expiry_monitor()
+        advanced = await _wait_for_round_status(service, round_record.id, RoundStatus.RCV_OPEN)
+
+        assert advanced.rcv_poll_id is not None
+        assert not voting.snapshot(old_poll_id).is_open
+    finally:
+        monitor.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await monitor
+
+
+
+@pytest.mark.asyncio
+async def test_expiry_monitor_closes_expired_rcv_poll_and_starts_playback(workspace_tmp: Path) -> None:
+    service, voting, downloader, player = make_service(workspace_tmp)
+    monitor = asyncio.create_task(service.run_expiry_monitor())
+    try:
+        round_record = await service.start_round()
+        await service.submit_suggestion(platform="discord", user_id="1", display_name="One", raw_text="Shame 2012")
+        after_collection = await service.close_collection(round_record.id)
+        assert after_collection.rcv_poll_id is not None
+
+        with service.session_factory() as session:
+            poll = session.exec(select(PollRecord).where(PollRecord.external_id == after_collection.rcv_poll_id)).one()
+            poll.created_at = utc_now() - timedelta(seconds=after_collection.rcv_poll_seconds + 1)
+            session.add(poll)
+            session.commit()
+
+        service.wake_expiry_monitor()
+        advanced = await _wait_for_round_status(service, round_record.id, RoundStatus.PLAYING)
+
+        assert advanced.winner_title == "Shame"
+        assert downloader.requested[0].title == "Shame"
+        assert player.loaded == ["C:/movies/winner.mkv"]
+        assert not voting.snapshot(after_collection.rcv_poll_id).is_open
+    finally:
+        monitor.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await monitor
+
+
+@pytest.mark.asyncio
+async def test_expiry_monitor_cancels_expired_collection_without_suggestions(workspace_tmp: Path) -> None:
+    service, *_ = make_service(workspace_tmp)
+    monitor = asyncio.create_task(service.run_expiry_monitor())
+    try:
+        round_record = await service.start_round()
+        with service.session_factory() as session:
+            stored_round = session.get(Round, round_record.id)
+            assert stored_round is not None
+            stored_round.collection_closes_at = utc_now() - timedelta(seconds=1)
+            session.add(stored_round)
+            session.commit()
+
+        service.wake_expiry_monitor()
+        cancelled = await _wait_for_round_status(service, round_record.id, RoundStatus.CANCELLED)
+
+        assert cancelled.status == RoundStatus.CANCELLED
+        restarted = await service.start_round()
+        assert restarted.status == RoundStatus.COLLECTING
+    finally:
+        monitor.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await monitor
+
+
+@pytest.mark.asyncio
+async def test_expiry_monitor_closes_collection_without_request_polling(workspace_tmp: Path) -> None:
+    service, voting, *_ = make_service(workspace_tmp)
+    monitor = asyncio.create_task(service.run_expiry_monitor())
+    try:
+        round_record = await service.start_round()
+        await service.submit_suggestion(platform="discord", user_id="1", display_name="One", raw_text="Shame 2012")
+        with service.session_factory() as session:
+            stored_round = session.get(Round, round_record.id)
+            assert stored_round is not None
+            stored_round.collection_closes_at = utc_now() - timedelta(seconds=1)
+            session.add(stored_round)
+            session.commit()
+
+        service.wake_expiry_monitor()
+        advanced = await _wait_for_round_status(service, round_record.id, RoundStatus.RCV_OPEN)
+
+        assert advanced.rcv_poll_id is not None
+        assert voting.snapshot(advanced.rcv_poll_id).kind == PollKind.RCV
+    finally:
+        monitor.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await monitor
+
+
+@pytest.mark.asyncio
 async def test_admin_bypass_allows_multiple_active_suggestions_from_same_viewer(workspace_tmp: Path) -> None:
     service, *_ = make_service(workspace_tmp)
 
@@ -197,3 +353,15 @@ async def test_reroll_replaces_open_approval_poll(workspace_tmp: Path) -> None:
 
 def _candidate_id(candidates, title: str) -> str:
     return next(candidate.id for candidate in candidates if candidate.title == title)
+
+
+async def _wait_for_round_status(service: ConductorService, round_id: int, status: RoundStatus) -> Round:
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
+        with service.session_factory() as session:
+            round_record = session.get(Round, round_id)
+            assert round_record is not None
+            if round_record.status == status:
+                return round_record
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"Round {round_id} did not reach {status}")

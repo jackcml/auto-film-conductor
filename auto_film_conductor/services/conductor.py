@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -10,6 +12,9 @@ from sqlmodel import Session, col, select
 from auto_film_conductor.config import Settings
 from auto_film_conductor.domain import Downloader, MovieResolver, PlayerController, PollCandidate, ResolvedMovie, VotingProvider
 from auto_film_conductor.models import AuditEvent, PollKind, PollRecord, PollStatus, Round, RoundStatus, Suggestion, SuggestionStatus, utc_now
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,6 +43,8 @@ class ConductorService:
         self.downloader = downloader
         self.player = player
         self.rng = rng or random.Random()
+        self._expiry_lock = asyncio.Lock()
+        self._expiry_wake_event = asyncio.Event()
 
     async def start_round(self) -> Round:
         with self.session_factory() as session:
@@ -58,11 +65,68 @@ class ConductorService:
             session.refresh(round_record)
             _audit(session, round_record.id, "round_started", f"Started round {round_record.id}")
             session.commit()
+            self.wake_expiry_monitor()
             return round_record
 
     async def current_round(self) -> Round | None:
         with self.session_factory() as session:
             return _current_round(session)
+
+    async def _advance_expired_current_round(self) -> Round | None:
+        movie: ResolvedMovie | None = None
+        async with self._expiry_lock:
+            with self.session_factory() as session:
+                round_record = _current_round(session)
+                if round_record is None:
+                    return None
+
+                if round_record.status == RoundStatus.COLLECTING:
+                    if utc_now() < _as_utc(round_record.collection_closes_at):
+                        return round_record
+                    round_id = _require_value(round_record.id, "Expected persisted round")
+                    has_suggestions = (
+                        session.exec(
+                            select(Suggestion.id).where(
+                                Suggestion.round_id == round_id,
+                                Suggestion.status == SuggestionStatus.ACCEPTED,
+                            )
+                        ).first()
+                        is not None
+                    )
+                    if not has_suggestions:
+                        round_record.status = RoundStatus.CANCELLED
+                        round_record.updated_at = utc_now()
+                        session.add(round_record)
+                        _audit(session, round_id, "collection_expired", "No accepted suggestions")
+                        session.commit()
+                        session.refresh(round_record)
+                        self.wake_expiry_monitor()
+                        return round_record
+                    expired_status = RoundStatus.COLLECTING
+
+                elif round_record.status == RoundStatus.APPROVAL_OPEN:
+                    if not _poll_timer_expired(session, round_record, utc_now()):
+                        return round_record
+                    round_id = _require_value(round_record.id, "Expected persisted round")
+                    expired_status = RoundStatus.APPROVAL_OPEN
+
+                elif round_record.status == RoundStatus.RCV_OPEN:
+                    if not _poll_timer_expired(session, round_record, utc_now()):
+                        return round_record
+                    round_id = _require_value(round_record.id, "Expected persisted round")
+                    expired_status = RoundStatus.RCV_OPEN
+
+                else:
+                    return round_record
+
+            if expired_status == RoundStatus.COLLECTING:
+                return await self.close_collection(round_id)
+            if expired_status == RoundStatus.APPROVAL_OPEN:
+                return await self.close_approval(round_id)
+            movie = await self._select_rcv_winner_for_playback(round_id)
+        if movie is None:
+            raise ValueError("Expected expired RCV round to select a winner")
+        return await self._download_and_play(round_id, movie)
 
     async def submit_suggestion(
         self,
@@ -78,6 +142,8 @@ class ConductorService:
             round_record = _require_current_round(session)
             if round_record.status != RoundStatus.COLLECTING:
                 return SuggestionResult(False, f"Suggestions are not open; current state is {round_record.status}.")
+            if _as_utc(round_record.collection_closes_at) <= utc_now():
+                return SuggestionResult(False, "Suggestions are not open; the collection window has ended.")
             if not cleaned:
                 return SuggestionResult(False, "Send a movie title after mentioning the bot.")
             if not bypass_suggestion_limit:
@@ -95,6 +161,10 @@ class ConductorService:
         movie = await self.resolver.resolve(cleaned)
         with self.session_factory() as session:
             round_record = _require_current_round(session)
+            if round_record.status != RoundStatus.COLLECTING:
+                return SuggestionResult(False, f"Suggestions are not open; current state is {round_record.status}.")
+            if _as_utc(round_record.collection_closes_at) <= utc_now():
+                return SuggestionResult(False, "Suggestions are not open; the collection window has ended.")
             if movie is None:
                 suggestion = Suggestion(
                     round_id=round_record.id,
@@ -140,6 +210,37 @@ class ConductorService:
             session.refresh(suggestion)
             return SuggestionResult(True, f"Added {suggestion.title} ({suggestion.year}).", suggestion)
 
+    async def run_expiry_monitor(self) -> None:
+        while True:
+            self._expiry_wake_event.clear()
+            try:
+                await self._advance_expired_current_round()
+            except Exception:
+                logger.exception("Failed to advance expired conductor round")
+
+            delay = self.seconds_until_current_phase_expires()
+            if delay is None:
+                await self._expiry_wake_event.wait()
+                continue
+
+            try:
+                await asyncio.wait_for(self._expiry_wake_event.wait(), timeout=max(0.0, delay))
+            except TimeoutError:
+                continue
+
+    def wake_expiry_monitor(self) -> None:
+        self._expiry_wake_event.set()
+
+    def seconds_until_current_phase_expires(self) -> float | None:
+        with self.session_factory() as session:
+            round_record = _current_round(session)
+            if round_record is None:
+                return None
+            target = _expiry_target(session, round_record)
+            if target is None:
+                return None
+            return (_as_utc(target) - utc_now()).total_seconds()
+
     async def close_collection(self, round_id: int) -> Round:
         with self.session_factory() as session:
             round_record = _round(session, round_id)
@@ -183,6 +284,7 @@ class ConductorService:
                 _audit(session, round_id, "rcv_poll_opened", poll_id)
                 session.commit()
                 session.refresh(round_record)
+                self.wake_expiry_monitor()
                 return round_record
 
         poll_id = await self.voting.create_poll(
@@ -209,6 +311,7 @@ class ConductorService:
             _audit(session, round_id, "approval_poll_opened", poll_id)
             session.commit()
             session.refresh(round_record)
+            self.wake_expiry_monitor()
             return round_record
 
     async def reroll(self, round_id: int) -> Round:
@@ -254,6 +357,7 @@ class ConductorService:
             _audit(session, round_id, "approval_poll_rerolled", poll_id)
             session.commit()
             session.refresh(round_record)
+            self.wake_expiry_monitor()
             return round_record
 
     async def close_approval(self, round_id: int) -> Round:
@@ -299,9 +403,14 @@ class ConductorService:
             _audit(session, round_id, "rcv_poll_opened", poll_id)
             session.commit()
             session.refresh(round_record)
+            self.wake_expiry_monitor()
             return round_record
 
     async def close_rcv_and_play(self, round_id: int) -> Round:
+        movie = await self._select_rcv_winner_for_playback(round_id)
+        return await self._download_and_play(round_id, movie)
+
+    async def _select_rcv_winner_for_playback(self, round_id: int) -> ResolvedMovie:
         with self.session_factory() as session:
             round_record = _round(session, round_id)
             _require_status(round_record, RoundStatus.RCV_OPEN)
@@ -334,6 +443,10 @@ class ConductorService:
             _audit(session, round_id, "winner_selected", movie.title)
             session.commit()
 
+        self.wake_expiry_monitor()
+        return movie
+
+    async def _download_and_play(self, round_id: int, movie: ResolvedMovie) -> Round:
         imported = await self.downloader.request_and_wait(movie)
         if not imported.file_path:
             raise ValueError("Downloader completed without a file path")
@@ -348,6 +461,7 @@ class ConductorService:
             _audit(session, round_id, "playback_started", imported.file_path)
             session.commit()
             session.refresh(round_record)
+            self.wake_expiry_monitor()
             return round_record
 
     async def pause(self, round_id: int) -> Round:
@@ -362,6 +476,7 @@ class ConductorService:
             _audit(session, round_id, "round_paused", round_record.previous_status or "")
             session.commit()
             session.refresh(round_record)
+            self.wake_expiry_monitor()
             return round_record
 
     async def resume(self, round_id: int) -> Round:
@@ -375,6 +490,7 @@ class ConductorService:
             _audit(session, round_id, "round_resumed", round_record.status)
             session.commit()
             session.refresh(round_record)
+            self.wake_expiry_monitor()
             return round_record
 
     async def cancel(self, round_id: int) -> Round:
@@ -386,6 +502,7 @@ class ConductorService:
             _audit(session, round_id, "round_cancelled", "")
             session.commit()
             session.refresh(round_record)
+            self.wake_expiry_monitor()
             return round_record
 
     async def complete(self, round_id: int) -> Round:
@@ -397,6 +514,7 @@ class ConductorService:
             _audit(session, round_id, "round_completed", "")
             session.commit()
             session.refresh(round_record)
+            self.wake_expiry_monitor()
             return round_record
 
     async def override_winner(self, round_id: int, suggestion_id: int) -> Round:
@@ -457,6 +575,34 @@ def _close_poll_record(session: Session, external_id: str) -> None:
         poll.status = PollStatus.CLOSED
         poll.closed_at = datetime.now(UTC)
         session.add(poll)
+
+
+def _poll_timer_expired(session: Session, round_record: Round, now: datetime) -> bool:
+    target = _expiry_target(session, round_record)
+    return target is not None and _as_utc(now) >= target
+
+
+def _expiry_target(session: Session, round_record: Round) -> datetime | None:
+    if round_record.status == RoundStatus.COLLECTING:
+        return _as_utc(round_record.collection_closes_at)
+
+    if round_record.status not in {RoundStatus.APPROVAL_OPEN, RoundStatus.RCV_OPEN}:
+        return None
+
+    poll_id = round_record.approval_poll_id if round_record.status == RoundStatus.APPROVAL_OPEN else round_record.rcv_poll_id
+    if poll_id is None:
+        return None
+    poll = session.exec(select(PollRecord).where(PollRecord.external_id == poll_id)).first()
+    if poll is None:
+        return None
+    duration = round_record.approval_poll_seconds if round_record.status == RoundStatus.APPROVAL_OPEN else round_record.rcv_poll_seconds
+    return _as_utc(poll.created_at) + timedelta(seconds=duration)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _audit(session: Session, round_id: int | None, event_type: str, message: str) -> None:

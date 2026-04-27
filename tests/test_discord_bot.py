@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -29,12 +30,12 @@ class FakeMessage:
 async def test_discord_message_replies_when_lookup_backend_is_unavailable() -> None:
     bot_user = SimpleNamespace(mention="<@999>")
     bot = object.__new__(DiscordConductorBot)
-    bot._connection = SimpleNamespace(user=bot_user)
-    bot.conductor = FailingConductor()
+    bot._connection = cast(Any, SimpleNamespace(user=bot_user))
+    bot.conductor = cast(Any, FailingConductor())
     bot.channel_id = None
     bot.admin_role_id = None
     message = FakeMessage(bot_user)
 
-    await bot.on_message(message)
+    await bot.on_message(cast(Any, message))
 
     assert message.replies == ["Movie lookup is unavailable right now. Check Radarr and try again."]

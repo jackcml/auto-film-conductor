@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from importlib.resources import files
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -78,7 +79,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         init_db(state.engine)
-        yield
+        expiry_task = asyncio.create_task(state.conductor.run_expiry_monitor())
+        try:
+            yield
+        finally:
+            expiry_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await expiry_task
 
     app = FastAPI(title="Auto Film Conductor", lifespan=lifespan)
     app.state.afc = state
