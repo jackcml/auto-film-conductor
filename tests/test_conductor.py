@@ -143,6 +143,24 @@ async def test_rejects_second_active_suggestion_from_same_viewer(workspace_tmp: 
 
 
 @pytest.mark.asyncio
+async def test_admin_bypass_allows_multiple_active_suggestions_from_same_viewer(workspace_tmp: Path) -> None:
+    service, *_ = make_service(workspace_tmp)
+
+    await service.start_round()
+    first = await service.submit_suggestion(platform="discord", user_id="1", display_name="One", raw_text="Shame 2012")
+    second = await service.submit_suggestion(
+        platform="discord",
+        user_id="1",
+        display_name="One",
+        raw_text="Heat 1995",
+        bypass_suggestion_limit=True,
+    )
+
+    assert first.accepted
+    assert second.accepted
+
+
+@pytest.mark.asyncio
 async def test_reroll_replaces_open_approval_poll(workspace_tmp: Path) -> None:
     service, voting, *_ = make_service(workspace_tmp)
 

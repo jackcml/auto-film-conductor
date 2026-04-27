@@ -45,6 +45,7 @@ class DiscordConductorBot(discord.Client):
             user_id=str(message.author.id),
             display_name=message.author.display_name,
             raw_text=query,
+            bypass_suggestion_limit=self._has_admin_role(message.author),
         )
         await message.reply(result.message, mention_author=False)
 
@@ -141,7 +142,9 @@ class DiscordConductorBot(discord.Client):
         self.tree.add_command(group)
 
     def _is_admin(self, interaction: discord.Interaction) -> bool:
+        return self._has_admin_role(interaction.user)
+
+    def _has_admin_role(self, user: discord.User | discord.Member) -> bool:
         if self.admin_role_id is None:
             return True
-        user = interaction.user
         return isinstance(user, discord.Member) and any(role.id == self.admin_role_id for role in user.roles)

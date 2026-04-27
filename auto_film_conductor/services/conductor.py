@@ -64,7 +64,15 @@ class ConductorService:
         with self.session_factory() as session:
             return _current_round(session)
 
-    async def submit_suggestion(self, *, platform: str, user_id: str, display_name: str, raw_text: str) -> SuggestionResult:
+    async def submit_suggestion(
+        self,
+        *,
+        platform: str,
+        user_id: str,
+        display_name: str,
+        raw_text: str,
+        bypass_suggestion_limit: bool = False,
+    ) -> SuggestionResult:
         cleaned = raw_text.strip()
         with self.session_factory() as session:
             round_record = _require_current_round(session)
@@ -72,16 +80,17 @@ class ConductorService:
                 return SuggestionResult(False, f"Suggestions are not open; current state is {round_record.status}.")
             if not cleaned:
                 return SuggestionResult(False, "Send a movie title after mentioning the bot.")
-            existing_user_suggestion = session.exec(
-                select(Suggestion).where(
-                    Suggestion.round_id == round_record.id,
-                    Suggestion.platform == platform,
-                    Suggestion.user_id == user_id,
-                    Suggestion.status == SuggestionStatus.ACCEPTED,
-                )
-            ).first()
-            if existing_user_suggestion is not None:
-                return SuggestionResult(False, "You already have one active suggestion in this round.")
+            if not bypass_suggestion_limit:
+                existing_user_suggestion = session.exec(
+                    select(Suggestion).where(
+                        Suggestion.round_id == round_record.id,
+                        Suggestion.platform == platform,
+                        Suggestion.user_id == user_id,
+                        Suggestion.status == SuggestionStatus.ACCEPTED,
+                    )
+                ).first()
+                if existing_user_suggestion is not None:
+                    return SuggestionResult(False, "You already have one active suggestion in this round.")
 
         movie = await self.resolver.resolve(cleaned)
         with self.session_factory() as session:
